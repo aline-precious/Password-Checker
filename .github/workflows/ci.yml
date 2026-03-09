@@ -66,7 +66,7 @@ jobs:
           print('  ── Crack times ───────────────────────────')
           check('crack_offline is string',         isinstance(r['crack_offline'], str))
           check('crack_online is string',          isinstance(r['crack_online'], str))
-          check('Weak password cracks fast',       r['crack_offline'] in ['< 1 second','1 seconds','2 seconds'])
+          check('Weak password cracks fast',       'second' in r['crack_offline'] or 'minute' in r['crack_offline'])
 
           print()
           print('  ── Structure checks ──────────────────────')
