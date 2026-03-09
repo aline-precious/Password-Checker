@@ -30,10 +30,9 @@ jobs:
 
       - name: Run password analysis unit tests
         run: |
-          cd backend
           python3 -c "
           import sys
-          sys.path.insert(0, '.')
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
           import server
 
           PASS = '\033[92m✔\033[0m'
@@ -114,7 +113,6 @@ jobs:
 
       - name: Test HTTP server starts and responds
         run: |
-          cd backend
           python3 server.py &
           SERVER_PID=$!
           sleep 2
@@ -157,15 +155,14 @@ jobs:
 
       - name: Compile Java CLI
         run: |
-          mkdir -p java-cli/out
-          javac -d java-cli/out java-cli/src/*.java
+          mkdir -p out
+          javac -d out *.java
           echo "  Java CLI compiled successfully ✔"
 
       - name: Run Java CLI smoke test
         run: |
-          RESULT=$(java -cp java-cli/out PasswordChecker "TestPass123!" 2>&1)
+          RESULT=$(java -cp out PasswordChecker "TestPass123!" 2>&1)
           echo "$RESULT"
-          # Check for expected output sections
           echo "$RESULT" | grep -q "SECURITY CHECKS"   && echo "  ✔ Found SECURITY CHECKS"
           echo "$RESULT" | grep -q "ENTROPY"            && echo "  ✔ Found ENTROPY"
           echo "$RESULT" | grep -q "ATTACK SIMULATION"  && echo "  ✔ Found ATTACK SIMULATION"
