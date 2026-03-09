@@ -43,8 +43,8 @@ jobs:
       - name: Build Java (for CodeQL to analyse)
         if: matrix.language == 'java'
         run: |
-          mkdir -p java-cli/out
-          javac -d java-cli/out java-cli/src/*.java
+          mkdir -p out
+          javac -d out *.java
 
       - name: Autobuild (Python)
         if: matrix.language == 'python'
