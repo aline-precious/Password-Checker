@@ -34,8 +34,8 @@ jobs:
 
           WORKDIR /app
 
-          # Copy backend only
-          COPY backend/server.py .
+          # server.py is at repo root
+          COPY server.py .
 
           # No pip install needed — pure stdlib
 
