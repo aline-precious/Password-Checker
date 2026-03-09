@@ -40,9 +40,8 @@ jobs:
 
       - name: Run full test suite
         run: |
-          cd backend
           python3 -c "
-          import sys; sys.path.insert(0,'.')
+          import sys; sys.path.insert(0,'$GITHUB_WORKSPACE')
           import server
 
           tests = [
@@ -68,8 +67,8 @@ jobs:
 
       - name: Compile Java CLI
         run: |
-          mkdir -p java-cli/out
-          javac -d java-cli/out java-cli/src/*.java
+          mkdir -p out
+          javac -d out *.java
           echo "Java compilation successful"
 
       - name: Build release ZIP
@@ -78,29 +77,24 @@ jobs:
           RELEASE_DIR="CIPHER-v${VERSION}"
           mkdir -p "${RELEASE_DIR}"
 
-          # Copy all project files cleanly
-          cp -r backend   "${RELEASE_DIR}/"
-          cp -r frontend  "${RELEASE_DIR}/"
-          cp -r java-cli  "${RELEASE_DIR}/"
-          cp start-backend.sh start-backend.bat  "${RELEASE_DIR}/"
-          cp run-java-cli.sh  run-java-cli.bat   "${RELEASE_DIR}/"
-          cp README.md                            "${RELEASE_DIR}/"
+          # Copy all files — flat repo structure
+          cp server.py     "${RELEASE_DIR}/"
+          cp index.html    "${RELEASE_DIR}/"
+          cp *.java        "${RELEASE_DIR}/"
+          cp *.sh          "${RELEASE_DIR}/" 2>/dev/null || true
+          cp *.bat         "${RELEASE_DIR}/" 2>/dev/null || true
+          cp README.md     "${RELEASE_DIR}/" 2>/dev/null || true
 
           # Inject version into README
-          sed -i "s/v1.0/v${VERSION}/g" "${RELEASE_DIR}/README.md"
+          sed -i "s/v1.0/v${VERSION}/g" "${RELEASE_DIR}/README.md" 2>/dev/null || true
 
-          # Remove build artifacts from release
-          rm -rf "${RELEASE_DIR}/java-cli/out"
+          # Remove build artifacts
           find "${RELEASE_DIR}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          find "${RELEASE_DIR}" -name "*.pyc" -delete 2>/dev/null || true
+          find "${RELEASE_DIR}" -name "*.pyc"   -delete 2>/dev/null || true
+          find "${RELEASE_DIR}" -name "*.class" -delete 2>/dev/null || true
 
-          # Make scripts executable
-          chmod +x "${RELEASE_DIR}"/*.sh
-
-          # Create ZIP
+          # Create ZIP + tarball
           zip -r "CIPHER-v${VERSION}.zip" "${RELEASE_DIR}/"
-
-          # Create tarball for Linux users
           tar -czf "CIPHER-v${VERSION}.tar.gz" "${RELEASE_DIR}/"
 
           echo "Release artifacts:"
