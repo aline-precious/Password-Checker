@@ -1,0 +1,170 @@
+name: Release — Auto Package & Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'   # triggers on v1.0.0, v2.1.3, etc.
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for changelog generation
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "Building release: $TAG"
+
+      - name: Run full test suite
+        run: |
+          cd backend
+          python3 -c "
+          import sys; sys.path.insert(0,'.')
+          import server
+
+          tests = [
+            ('password',              0,  'CRITICAL'),
+            ('abc123',                0,  'CRITICAL'),
+            ('Hello123',              None, None),
+            ('Tr0ub4dor\$3',          None, None),
+            ('X#9mK\$2vLq!nW8@zP',   60, None),
+          ]
+
+          all_ok = True
+          for pw, min_score, strength in tests:
+              r = server.analyze_password(pw)
+              ok = True
+              if min_score is not None and r['score'] < min_score: ok = False
+              if strength  is not None and r['strength'] != strength: ok = False
+              status = '✔' if ok else '✘'
+              print(f'  {status}  {pw[:30]:30} score={r[\"score\"]:3} {r[\"strength\"]}')
+              if not ok: all_ok = False
+
+          sys.exit(0 if all_ok else 1)
+          "
+
+      - name: Compile Java CLI
+        run: |
+          mkdir -p java-cli/out
+          javac -d java-cli/out java-cli/src/*.java
+          echo "Java compilation successful"
+
+      - name: Build release ZIP
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          RELEASE_DIR="CIPHER-v${VERSION}"
+          mkdir -p "${RELEASE_DIR}"
+
+          # Copy all project files cleanly
+          cp -r backend   "${RELEASE_DIR}/"
+          cp -r frontend  "${RELEASE_DIR}/"
+          cp -r java-cli  "${RELEASE_DIR}/"
+          cp start-backend.sh start-backend.bat  "${RELEASE_DIR}/"
+          cp run-java-cli.sh  run-java-cli.bat   "${RELEASE_DIR}/"
+          cp README.md                            "${RELEASE_DIR}/"
+
+          # Inject version into README
+          sed -i "s/v1.0/v${VERSION}/g" "${RELEASE_DIR}/README.md"
+
+          # Remove build artifacts from release
+          rm -rf "${RELEASE_DIR}/java-cli/out"
+          find "${RELEASE_DIR}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          find "${RELEASE_DIR}" -name "*.pyc" -delete 2>/dev/null || true
+
+          # Make scripts executable
+          chmod +x "${RELEASE_DIR}"/*.sh
+
+          # Create ZIP
+          zip -r "CIPHER-v${VERSION}.zip" "${RELEASE_DIR}/"
+
+          # Create tarball for Linux users
+          tar -czf "CIPHER-v${VERSION}.tar.gz" "${RELEASE_DIR}/"
+
+          echo "Release artifacts:"
+          ls -lh CIPHER-v${VERSION}.*
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git tag --sort=-version:refname | sed -n '2p')
+          CURRENT_TAG=${{ steps.version.outputs.tag }}
+
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" | head -20)
+          else
+            COMMITS=$(git log ${PREV_TAG}..${CURRENT_TAG} --pretty=format:"- %s (%h)")
+          fi
+
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "CIPHER ${{ steps.version.outputs.tag }} — Password Threat Intelligence"
+          body: |
+            ## 🔐 CIPHER ${{ steps.version.outputs.tag }}
+
+            ### What's included
+            - **Python backend** — REST API server (`localhost:8080`), zero dependencies
+            - **SOC Dashboard** — Full threat intelligence frontend (`frontend/index.html`)
+            - **Java CLI** — ANSI terminal auditor (requires JDK 11+)
+
+            ### Quick Start
+            ```bash
+            # 1. Start the backend
+            ./start-backend.sh          # Linux/Mac
+            start-backend.bat           # Windows
+
+            # 2. Open frontend/index.html in your browser
+
+            # 3. Or use the Java CLI
+            ./run-java-cli.sh
+            ```
+
+            ### Changes
+            ${{ steps.changelog.outputs.changelog }}
+
+            ---
+            > ⚠️ Passwords are **never** stored or transmitted. All analysis runs locally.
+          files: |
+            CIPHER-${{ steps.version.outputs.tag }}.zip
+            CIPHER-${{ steps.version.outputs.tag }}.tar.gz
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+
+      - name: Release summary
+        run: |
+          echo "## 🚀 Release ${{ steps.version.outputs.tag }} Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Assets:**" >> $GITHUB_STEP_SUMMARY
+          echo "- \`CIPHER-${{ steps.version.outputs.tag }}.zip\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`CIPHER-${{ steps.version.outputs.tag }}.tar.gz\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Docker image auto-published via the Docker workflow." >> $GITHUB_STEP_SUMMARY

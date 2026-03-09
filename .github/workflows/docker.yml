@@ -1,0 +1,114 @@
+name: Docker — Build & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Dockerfile
+        run: |
+          cat > Dockerfile << 'EOF'
+          FROM python:3.12-slim
+
+          LABEL org.opencontainers.image.title="CIPHER Backend"
+          LABEL org.opencontainers.image.description="Password Threat Intelligence API"
+          LABEL org.opencontainers.image.source="https://github.com/${{ github.repository }}"
+
+          WORKDIR /app
+
+          # Copy backend only
+          COPY backend/server.py .
+
+          # No pip install needed — pure stdlib
+
+          EXPOSE 8080
+
+          HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+            CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+
+          CMD ["python3", "server.py"]
+          EOF
+          cat Dockerfile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Test Docker image
+        run: |
+          docker run -d -p 8080:8080 --name cipher-test \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest || \
+          docker run -d -p 8080:8080 --name cipher-test \
+            $(docker build -q .)
+
+          sleep 3
+
+          HEALTH=$(curl -sf http://localhost:8080/health || echo "FAILED")
+          echo "Health: $HEALTH"
+
+          RESULT=$(curl -sf "http://localhost:8080/analyze?password=TestPass123!" || echo "FAILED")
+          echo "Analyze: $(echo $RESULT | python3 -c 'import sys,json; d=json.load(sys.stdin); print(f"score={d[\"score\"]}")')"
+
+          docker stop cipher-test
+          docker rm cipher-test
+
+      - name: Image digest summary
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "## 🐳 Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pull command:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker run -p 8080:8080 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
