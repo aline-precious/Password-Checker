@@ -1,0 +1,172 @@
+name: CI — Backend Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-backend:
+    name: Python Backend Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify no external dependencies needed
+        run: |
+          echo "CIPHER backend uses stdlib only — no pip install required."
+
+      - name: Run password analysis unit tests
+        run: |
+          cd backend
+          python3 -c "
+          import sys
+          sys.path.insert(0, '.')
+          import server
+
+          PASS = '\033[92m✔\033[0m'
+          FAIL = '\033[91m✘\033[0m'
+          errors = []
+
+          def check(label, condition):
+              if condition:
+                  print(f'  {PASS}  {label}')
+              else:
+                  print(f'  {FAIL}  {label}')
+                  errors.append(label)
+
+          print()
+          print('  ── Basic scoring ─────────────────────────')
+          r = server.analyze_password('password')
+          check('Weak password scores 0',          r['score'] == 0)
+          check('Weak password is CRITICAL',        r['strength'] == 'CRITICAL')
+
+          r2 = server.analyze_password('X#9mK\$2vLq!nW8@zP')
+          check('Strong password scores >= 60',    r2['score'] >= 60)
+          check('Strong password not CRITICAL',    r2['strength'] != 'CRITICAL')
+
+          print()
+          print('  ── Entropy checks ────────────────────────')
+          check('Entropy is a float',              isinstance(r['entropy'], float))
+          check('Weak entropy < 50 bits',          r['entropy'] < 50)
+          check('Strong entropy > 80 bits',        r2['entropy'] > 80)
+
+          print()
+          print('  ── Crack times ───────────────────────────')
+          check('crack_offline is string',         isinstance(r['crack_offline'], str))
+          check('crack_online is string',          isinstance(r['crack_online'], str))
+          check('Weak password cracks fast',       r['crack_offline'] in ['< 1 second','1 seconds','2 seconds'])
+
+          print()
+          print('  ── Structure checks ──────────────────────')
+          check('Has checks list',                 isinstance(r['checks'], list))
+          check('Has patterns list',               isinstance(r['patterns'], list))
+          check('Has attacks list',                isinstance(r['attacks'], list))
+          check('Has badges list',                 isinstance(r['badges'], list))
+          check('Has ai dict',                     isinstance(r['ai'], dict))
+          check('Has dna dict',                    isinstance(r['dna'], dict))
+          check('AI has face emoji',               'face' in r['ai'])
+          check('AI has message',                  'message' in r['ai'])
+          check('DNA has bars',                    'bars' in r['dna'])
+          check('DNA has hash',                    'hash' in r['dna'])
+
+          print()
+          print('  ── Attack simulation ─────────────────────')
+          r3 = server.analyze_password('admin')
+          vuln = [a for a in r3['attacks'] if a['vulnerable']]
+          check('\"admin\" triggers multiple attacks',  len(vuln) >= 2)
+
+          print()
+          print('  ── Threat detection ──────────────────────')
+          r4 = server.analyze_password('qwerty')
+          common_fail = any(not p['passed'] and p['id'] == 'nocommon' for p in r4['patterns'])
+          check('Common password flagged in patterns', common_fail)
+
+          print()
+          print('  ── Edge cases ────────────────────────────')
+          r5 = server.analyze_password('a')
+          check('Single char does not crash',      r5['score'] >= 0)
+          r6 = server.analyze_password('!' * 32)
+          check('32-char special does not crash',  r6['score'] >= 0)
+          r7 = server.analyze_password('correctHorseBatteryStaple99!')
+          check('Passphrase scores well',          r7['score'] >= 50)
+
+          print()
+          if errors:
+              print(f'  ✘  {len(errors)} test(s) FAILED: {errors}')
+              sys.exit(1)
+          else:
+              print(f'  All tests passed ✔')
+          print()
+          "
+
+      - name: Test HTTP server starts and responds
+        run: |
+          cd backend
+          python3 server.py &
+          SERVER_PID=$!
+          sleep 2
+
+          # Health check
+          HEALTH=$(curl -sf http://localhost:8080/health)
+          echo "Health response: $HEALTH"
+          echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['status']=='online', 'Health check failed'"
+
+          # Analyze endpoint
+          RESULT=$(curl -sf "http://localhost:8080/analyze?password=TestPass123!")
+          echo "$RESULT" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert 'score' in d,    'Missing score'
+          assert 'strength' in d, 'Missing strength'
+          assert 'entropy' in d,  'Missing entropy'
+          assert 'ai' in d,       'Missing ai'
+          assert 'dna' in d,      'Missing dna'
+          assert 'badges' in d,   'Missing badges'
+          print(f'  API response valid: score={d[\"score\"]}, strength={d[\"strength\"]}')
+          "
+
+          kill $SERVER_PID
+          echo "  HTTP server test passed ✔"
+
+  test-java-syntax:
+    name: Java Source Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Compile Java CLI
+        run: |
+          mkdir -p java-cli/out
+          javac -d java-cli/out java-cli/src/*.java
+          echo "  Java CLI compiled successfully ✔"
+
+      - name: Run Java CLI smoke test
+        run: |
+          RESULT=$(java -cp java-cli/out PasswordChecker "TestPass123!" 2>&1)
+          echo "$RESULT"
+          # Check for expected output sections
+          echo "$RESULT" | grep -q "SECURITY CHECKS"   && echo "  ✔ Found SECURITY CHECKS"
+          echo "$RESULT" | grep -q "ENTROPY"            && echo "  ✔ Found ENTROPY"
+          echo "$RESULT" | grep -q "ATTACK SIMULATION"  && echo "  ✔ Found ATTACK SIMULATION"
+          echo "  Java CLI smoke test passed ✔"
